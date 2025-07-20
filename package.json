@@ -1,0 +1,26 @@
+{
+  "name": "getmerlin-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker version of GetMerlin",
+  "main": "src/index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "keywords": [
+    "cloudflare",
+    "worker",
+    "merlin",
+    "openai",
+    "api"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "fake-useragent": "^1.0.1"
+  },
+  "devDependencies": {
+    "wrangler": "^4.25.0"
+  }
+}
