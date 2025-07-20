@@ -10,6 +10,15 @@ Cloudflare Worker version of GetMerlin - provides OpenAI-compatible API endpoint
 - Global edge deployment
 - CORS support
 
+## Supported Models
+
+This API supports only the following four models:
+
+- `gpt-4o-mini`
+- `llama-4-maverick`
+- `gemini-2.5-flash`
+- `deepseek-chat`
+
 ## Quick Start
 
 1. **Install dependencies**
@@ -55,11 +64,9 @@ curl -X POST https://your-worker.workers.dev/v1/chat/completions \
 
 Optional environment variables (set via `wrangler secret put`):
 - `AUTH_TOKEN`: API authentication token
-- `UUID`: System identifier
 
 ## Performance
 
-- 47% faster streaming responses vs Golang version
 - Global edge network deployment
 - Automatic scaling
 - Zero server maintenance
