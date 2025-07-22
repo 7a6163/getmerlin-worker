@@ -5,7 +5,6 @@
 import UserAgent from 'fake-useragent';
 
 // Constants
-const FIREBASE_SIGNUP_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=AIzaSyAvCgtQ4XbmlQGIynDT-v_M8eLaXrKmtiM";
 const MERLIN_API_URL = "https://www.getmerlin.in/arcane/api/v2/thread/unified";
 
 // Allowed models
@@ -35,9 +34,15 @@ function getEnvOrDefault(env, key, defaultValue) {
 }
 
 // Firebase token acquisition
-async function getToken() {
+async function getToken(env) {
   try {
-    const response = await fetch(FIREBASE_SIGNUP_URL, {
+    const googleApiKey = getEnvOrDefault(env, 'GOOGLE_API_KEY', '');
+    if (!googleApiKey) {
+      throw new Error('GOOGLE_API_KEY is not configured');
+    }
+
+    const firebaseSignupUrl = `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${googleApiKey}`;
+    const response = await fetch(firebaseSignupUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -158,7 +163,7 @@ async function handleChatCompletions(request, env) {
     };
 
     // Get authentication token
-    const token = await getToken();
+    const token = await getToken(env);
 
     // Make request to Merlin API
     const merlinResponse = await fetch(MERLIN_API_URL, {
