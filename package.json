@@ -2,8 +2,10 @@
   "name": "getmerlin-worker",
   "version": "1.0.0",
   "description": "Cloudflare Worker version of GetMerlin",
-  "main": "src/index.js",
+  "main": "src/index.ts",
   "scripts": {
+    "build": "tsc --noEmit",
+    "type-check": "tsc --noEmit",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail"
@@ -18,9 +20,14 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "fake-useragent": "^1.0.1"
+    "@cloudflare/workers-types": "^4.20250723.0",
+    "fake-useragent": "^1.0.1",
+    "hono": "^4.8.5"
   },
   "devDependencies": {
+    "@types/fake-useragent": "^1.0.0",
+    "@types/node": "^24.1.0",
+    "typescript": "^5.8.3",
     "wrangler": "^4.25.0"
   }
 }

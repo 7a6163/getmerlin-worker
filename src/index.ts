@@ -1,134 +1,59 @@
-/**
- * Cloudflare Worker version of GetMerlin
- */
+import { Hono } from 'hono';
+import { cors } from 'hono/cors';
+import { bearerAuth } from 'hono/bearer-auth';
+import type { Env, OpenAIRequest, OpenAIResponse, MerlinRequest, MerlinResponse } from './types';
+import { getRandomUserAgent, getCurrentTimestamp, getToken, removeCitationPatterns } from './utils';
+import { MERLIN_API_URL, ALLOWED_MODELS } from './constants';
 
-import UserAgent from 'fake-useragent';
+const app = new Hono<{ Bindings: Env }>();
 
-// Constants
-const MERLIN_API_URL = "https://www.getmerlin.in/arcane/api/v2/thread/unified";
+// CORS middleware
+app.use('/*', cors({
+  origin: '*',
+  allowMethods: ['GET', 'POST', 'OPTIONS'],
+  allowHeaders: ['Content-Type', 'Authorization'],
+  maxAge: 86400,
+}));
 
-// Allowed models
-const ALLOWED_MODELS = [
-  'gpt-4o-mini',
-  'llama-4-maverick',
-  'gemini-2.5-flash',
-  'deepseek-chat'
-];
+// Bearer auth middleware for /v1/chat/completions (conditional)
+app.use('/v1/chat/completions', async (c, next) => {
+  const authToken = c.env.AUTH_TOKEN;
 
-// Utility functions
-function getRandomUserAgent() {
-  try {
-    return UserAgent();
-  } catch (error) {
-    // Fallback to a default user agent if fake-useragent fails
-    return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+  if (authToken) {
+    const authMiddleware = bearerAuth({ token: authToken });
+    return authMiddleware(c, next);
   }
-}
 
-function getCurrentTimestamp() {
-  return Math.floor(Date.now() / 1000);
-}
+  await next();
+});
 
-function getEnvOrDefault(env, key, defaultValue) {
-  return env[key] || defaultValue;
-}
-
-// Firebase token acquisition
-async function getToken(env) {
-  try {
-    const googleApiKey = getEnvOrDefault(env, 'GOOGLE_API_KEY', '');
-    if (!googleApiKey) {
-      throw new Error('GOOGLE_API_KEY is not configured');
-    }
-
-    const firebaseSignupUrl = `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${googleApiKey}`;
-    const response = await fetch(firebaseSignupUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': getRandomUserAgent(),
-        'X-Client-Version': 'Chrome/JsCore/10.13.1/FirebaseCore-web'
-      },
-      body: JSON.stringify({ returnSecureToken: true })
-    });
-
-    if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
-    }
-
-    const data = await response.json();
-
-    if (!data.idToken) {
-      throw new Error('Received empty token');
-    }
-
-    return data.idToken;
-  } catch (error) {
-    throw new Error(`Failed to get token: ${error.message}`);
-  }
-}
-
-// Request handlers
-async function handleRoot() {
-  return new Response(JSON.stringify({
+// Root route
+app.get('/', (c) => {
+  return c.json({
     status: "GetMerlin Service Running...",
     message: "MoLoveSze..."
-  }), {
-    headers: { 'Content-Type': 'application/json' }
   });
-}
+});
 
-async function handleChatCompletions(request, env) {
+// Chat completions route
+app.post('/v1/chat/completions', async (c) => {
   try {
-    // Check authorization
-    const authHeader = request.headers.get('Authorization');
-    const envToken = getEnvOrDefault(env, 'AUTH_TOKEN', '');
-
-    if (envToken && authHeader !== `Bearer ${envToken}`) {
-      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-        status: 401,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-        }
-      });
-    }
-
-    // Parse request body
-    const openAIReq = await request.json();
+    const openAIReq: OpenAIRequest = await c.req.json();
 
     if (!openAIReq.messages || !Array.isArray(openAIReq.messages)) {
-      return new Response(JSON.stringify({ error: 'Invalid request format' }), {
-        status: 400,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-        }
-      });
+      return c.json({ error: 'Invalid request format' }, 400);
     }
 
     // Validate model
     const requestedModel = openAIReq.model || "gemini-2.5-flash";
-    if (!ALLOWED_MODELS.includes(requestedModel)) {
-      return new Response(JSON.stringify({
+    if (!ALLOWED_MODELS.includes(requestedModel as typeof ALLOWED_MODELS[number])) {
+      return c.json({
         error: `Model '${requestedModel}' is not supported. Allowed models: ${ALLOWED_MODELS.join(', ')}`
-      }), {
-        status: 400,
-        headers: {
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-        }
-      });
+      }, 400);
     }
 
     // Build context from previous messages
-    const contextMessages = [];
+    const contextMessages: string[] = [];
     for (let i = 0; i < openAIReq.messages.length - 1; i++) {
       const msg = openAIReq.messages[i];
       contextMessages.push(`${msg.role}: ${msg.content}`);
@@ -136,7 +61,7 @@ async function handleChatCompletions(request, env) {
     const context = contextMessages.join('\n');
 
     // Prepare Merlin request (v2 format)
-    const merlinReq = {
+    const merlinReq: MerlinRequest = {
       attachments: [],
       chatId: crypto.randomUUID(),
       language: "AUTO",
@@ -163,7 +88,7 @@ async function handleChatCompletions(request, env) {
     };
 
     // Get authentication token
-    const token = await getToken(env);
+    const token = await getToken(c.env);
 
     // Make request to Merlin API
     const merlinResponse = await fetch(MERLIN_API_URL, {
@@ -197,21 +122,13 @@ async function handleChatCompletions(request, env) {
     }
 
   } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
-      status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization'
-      }
-    });
+    return c.json({ error: (error as Error).message }, 500);
   }
-}
+});
 
-async function handleNonStreamingResponse(merlinResponse, model) {
+async function handleNonStreamingResponse(merlinResponse: Response, model: string): Promise<Response> {
   let fullContent = '';
-  const reader = merlinResponse.body.getReader();
+  const reader = merlinResponse.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
 
@@ -242,7 +159,7 @@ async function handleNonStreamingResponse(merlinResponse, model) {
         const dataStr = buffer.substring(dataIndex + 6, dataEndIndex).trim();
 
         try {
-          const merlinResp = JSON.parse(dataStr);
+          const merlinResp: MerlinResponse = JSON.parse(dataStr);
           if (merlinResp.data) {
             // v2 API uses 'text' field for content
             const content = merlinResp.data.text || merlinResp.data.content;
@@ -268,10 +185,9 @@ async function handleNonStreamingResponse(merlinResponse, model) {
   }
 
   // Remove citation patterns
-  const citationRegex = /(\[|【)\s*(citation|引用):\d+(-\d+)?\s*(\]|】)/g;
-  fullContent = fullContent.replace(citationRegex, '');
+  fullContent = removeCitationPatterns(fullContent);
 
-  const response = {
+  const response: OpenAIResponse = {
     id: `chatcmpl-${crypto.randomUUID()}`,
     object: "chat.completion",
     created: getCurrentTimestamp(),
@@ -293,22 +209,19 @@ async function handleNonStreamingResponse(merlinResponse, model) {
 
   return new Response(JSON.stringify(response), {
     headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+      'Content-Type': 'application/json'
     }
   });
 }
 
-function handleStreamingResponse(merlinResponse, model) {
+function handleStreamingResponse(merlinResponse: Response, model: string): Response {
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
 
   // Process the stream asynchronously
   (async () => {
-    const reader = merlinResponse.body.getReader();
+    const reader = merlinResponse.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
 
@@ -319,9 +232,6 @@ function handleStreamingResponse(merlinResponse, model) {
 
         const chunk = decoder.decode(value, { stream: true });
         buffer += chunk;
-
-        // Debug: log raw chunks (can be removed in production)
-        // console.log('Raw chunk received:', JSON.stringify(chunk));
 
         // Process all complete event-data pairs in buffer
         let processedIndex = 0;
@@ -350,7 +260,7 @@ function handleStreamingResponse(merlinResponse, model) {
           const dataStr = buffer.substring(dataIndex + 6, dataEndIndex).trim();
 
           try {
-            const merlinResp = JSON.parse(dataStr);
+            const merlinResp: MerlinResponse = JSON.parse(dataStr);
 
             // Handle different event types
             if (eventType === 'message' && merlinResp.data) {
@@ -358,7 +268,7 @@ function handleStreamingResponse(merlinResponse, model) {
               const content = merlinResp.data.text || merlinResp.data.content;
 
               if (content && content !== ' ' && merlinResp.data.type === 'text') {
-                const openAIResp = {
+                const openAIResp: OpenAIResponse = {
                   id: `chatcmpl-${crypto.randomUUID()}`,
                   object: "chat.completion.chunk",
                   created: getCurrentTimestamp(),
@@ -394,7 +304,7 @@ function handleStreamingResponse(merlinResponse, model) {
       // Stream processing completed
 
       // Send final chunk
-      const finalResp = {
+      const finalResp: OpenAIResponse = {
         id: `chatcmpl-${crypto.randomUUID()}`,
         object: "chat.completion.chunk",
         created: getCurrentTimestamp(),
@@ -421,48 +331,14 @@ function handleStreamingResponse(merlinResponse, model) {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      'Connection': 'keep-alive',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+      'Connection': 'keep-alive'
     }
   });
 }
 
-// CORS handler
-async function handleCORS() {
-  return new Response(JSON.stringify({ status: 'OK' }), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-      'Access-Control-Max-Age': '86400'
-    }
-  });
-}
+// 404 handler
+app.notFound((c) => {
+  return c.text('Not Found', 404);
+});
 
-// Main worker handler
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-
-    // Handle CORS preflight
-    if (request.method === 'OPTIONS') {
-      return handleCORS();
-    }
-
-    // Route handling
-    if (url.pathname === '/' && request.method === 'GET') {
-      return handleRoot();
-    }
-
-    if (url.pathname === '/v1/chat/completions' && request.method === 'POST') {
-      return handleChatCompletions(request, env);
-    }
-
-    // 404 for unknown routes
-    return new Response('Not Found', { status: 404 });
-  }
-};
+export default app;
