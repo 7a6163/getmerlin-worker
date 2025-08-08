@@ -2,7 +2,7 @@ export const MERLIN_API_URL = "https://www.getmerlin.in/arcane/api/v2/thread/uni
 
 export const ALLOWED_MODELS = [
   'gpt-4o-mini',
-  'llama-4-maverick',
+  'gpt-5-nano',
   'gemini-2.5-flash',
   'deepseek-chat'
 ] as const;

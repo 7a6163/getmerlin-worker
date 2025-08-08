@@ -15,7 +15,7 @@ Cloudflare Worker version of GetMerlin - provides OpenAI-compatible API endpoint
 This API supports only the following four models:
 
 - `gpt-4o-mini`
-- `llama-4-maverick`
+- `gpt-5-nano`
 - `gemini-2.5-flash`
 - `deepseek-chat`
 
