@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2025-08-16
+
+### Added
+- Implemented `/v1/models` endpoint following OpenAI API standard format
+- Models list endpoint returns proper OpenAI-compatible model objects
+
+### Changed
+- Updated version from 1.2.0 to 1.3.0
+- Removed unnecessary message field from root endpoint
+
 ## [1.2.0] - 2025-08-16
 
 ### Added

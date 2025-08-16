@@ -31,8 +31,39 @@ app.use('/v1/chat/completions', async (c, next) => {
 app.get('/', (c) => {
   return c.json({
     status: "GetMerlin Service Running",
-    version: "1.2.0",
+    version: "1.3.0",
     supported_models: ALLOWED_MODELS
+  });
+});
+
+// Models endpoint - OpenAI compatible
+app.get('/v1/models', (c) => {
+  const models = ALLOWED_MODELS.map(modelId => ({
+    id: modelId,
+    object: "model",
+    created: 1677610602,
+    owned_by: "openai",
+    permission: [{
+      id: `modelperm-${crypto.randomUUID()}`,
+      object: "model_permission",
+      created: 1677610602,
+      allow_create_engine: false,
+      allow_sampling: true,
+      allow_logprobs: true,
+      allow_search_indices: false,
+      allow_view: true,
+      allow_fine_tuning: false,
+      organization: "*",
+      group: null,
+      is_blocking: false
+    }],
+    root: modelId,
+    parent: null
+  }));
+
+  return c.json({
+    object: "list",
+    data: models
   });
 });
 
