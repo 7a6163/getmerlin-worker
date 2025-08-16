@@ -30,8 +30,9 @@ app.use('/v1/chat/completions', async (c, next) => {
 // Root route
 app.get('/', (c) => {
   return c.json({
-    status: "GetMerlin Service Running...",
-    message: "MoLoveSze..."
+    status: "GetMerlin Service Running",
+    version: "1.2.0",
+    supported_models: ALLOWED_MODELS
   });
 });
 
