@@ -41,7 +41,7 @@ app.get('/', async (c) => {
   const models = await getModels();
   return c.json({
     status: "GetMerlin Service Running",
-    version: "1.3.0",
+    version: "2.0.0",
     supported_models: models
   });
 });

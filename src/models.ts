@@ -1,4 +1,4 @@
-import { MODELS_CDN_URL, MODEL_CACHE_TTL_SECONDS, FALLBACK_MODELS } from './constants';
+import { MODELS_CDN_URL, MODEL_CACHE_TTL_SECONDS } from './constants';
 import type { MerlinConstantsResponse } from './types';
 
 function parseModels(data: MerlinConstantsResponse): string[] {
@@ -7,7 +7,7 @@ function parseModels(data: MerlinConstantsResponse): string[] {
   }
 
   return data.textLLMs
-    .filter((m) => !m.archived && !m.paid && typeof m.id === 'string')
+    .filter((m) => !m.archived && !m.paid && m.queryCost <= 1 && typeof m.id === 'string')
     .map((m) => m.id);
 }
 
@@ -57,7 +57,7 @@ export async function getModels(): Promise<string[]> {
 
     return models;
   } catch (error) {
-    console.error('Failed to fetch models from CDN, using fallback:', error);
-    return [...FALLBACK_MODELS];
+    console.error('Failed to fetch models from CDN:', error);
+    return [];
   }
 }

@@ -1,23 +1,24 @@
 # GetMerlin Cloudflare Worker
 
-Cloudflare Worker version of GetMerlin - provides OpenAI-compatible API endpoints for Merlin AI.
+Cloudflare Worker that provides OpenAI and Anthropic compatible API endpoints for Merlin AI.
 
 ## Features
 
 - OpenAI-compatible `/v1/chat/completions` API
+- Anthropic-compatible `/v1/messages` API
 - Streaming and non-streaming responses
-- Automatic Firebase authentication
+- Dynamic model list from CDN (cached 1 hour)
+- Automatic Firebase authentication with token caching
 - Global edge deployment
 - CORS support
 
 ## Supported Models
 
-This API supports only the following four models:
+Models are fetched dynamically from CDN. Only free models (`queryCost <= 1`) are available. Check the current list via:
 
-- `gpt-4o-mini`
-- `gpt-5-nano`
-- `gemini-2.5-flash`
-- `deepseek-chat`
+```bash
+curl https://your-worker.workers.dev/v1/models
+```
 
 ## Quick Start
 
@@ -47,27 +48,42 @@ This API supports only the following four models:
 
 ## Usage
 
-### Basic Request
+### OpenAI Format
+
 ```bash
 curl -X POST https://your-worker.workers.dev/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-4o-mini",
+    "model": "minimax-m2.5",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": false
   }'
 ```
 
-### Streaming Request
+### Anthropic Format
+
 ```bash
-curl -X POST https://your-worker.workers.dev/v1/chat/completions \
+curl -X POST https://your-worker.workers.dev/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "gpt-4o-mini",
-    "messages": [{"role": "user", "content": "Tell me a story"}],
-    "stream": true
+    "model": "minimax-m2.5",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
+
+### Streaming
+
+Both endpoints support `"stream": true` with their respective SSE formats.
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Health check and supported models |
+| `/v1/models` | GET | List available models (OpenAI format) |
+| `/v1/chat/completions` | POST | Chat completions (OpenAI format) |
+| `/v1/messages` | POST | Messages (Anthropic format) |
 
 ## Configuration
 
@@ -95,13 +111,8 @@ wrangler secret put AUTH_TOKEN
 # Enter your desired authentication token
 ```
 
-If `AUTH_TOKEN` is set, clients must include the header:
+If `AUTH_TOKEN` is set, clients must include one of:
 ```
 Authorization: Bearer <your-token>
+x-api-key: <your-token>
 ```
-
-## Performance
-
-- Global edge network deployment
-- Automatic scaling
-- Zero server maintenance
