@@ -13,37 +13,59 @@ export function getCurrentTimestamp(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-export async function getToken(env: Env): Promise<string> {
-  try {
-    const googleApiKey = env.GOOGLE_API_KEY || '';
-    if (!googleApiKey) {
-      throw new Error('GOOGLE_API_KEY is not configured');
-    }
+// Firebase token cache (module-level, survives across requests within same isolate)
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000; // refresh 5 min before expiry
+let cachedToken: string | null = null;
+let tokenExpiresAt = 0;
 
-    const firebaseSignupUrl = `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${googleApiKey}`;
-    const response = await fetch(firebaseSignupUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'User-Agent': getRandomUserAgent(),
-        'X-Client-Version': 'Chrome/JsCore/10.13.1/FirebaseCore-web'
-      },
-      body: JSON.stringify({ returnSecureToken: true })
-    });
+export async function getToken(env: Env): Promise<string> {
+  // Return cached token if still valid
+  if (cachedToken && Date.now() < tokenExpiresAt) {
+    return cachedToken;
+  }
+
+  const googleApiKey = env.GOOGLE_API_KEY || '';
+  if (!googleApiKey) {
+    throw new Error('GOOGLE_API_KEY is not configured');
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${googleApiKey}`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': getRandomUserAgent(),
+          'X-Client-Version': 'Chrome/JsCore/10.13.1/FirebaseCore-web'
+        },
+        body: JSON.stringify({ returnSecureToken: true }),
+        signal: controller.signal,
+      }
+    );
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      throw new Error(`Firebase auth failed with status ${response.status}`);
     }
 
     const data: FirebaseTokenResponse = await response.json();
 
     if (!data.idToken) {
-      throw new Error('Received empty token');
+      throw new Error('Received empty token from Firebase');
     }
 
-    return data.idToken;
+    // Firebase anonymous tokens are valid for ~1 hour
+    cachedToken = data.idToken;
+    tokenExpiresAt = Date.now() + 55 * 60 * 1000 - TOKEN_REFRESH_MARGIN_MS;
+
+    return cachedToken;
   } catch (error) {
-    throw new Error(`Failed to get token: ${(error as Error).message}`);
+    clearTimeout(timeoutId);
+    throw new Error('Failed to obtain authentication token');
   }
 }
 

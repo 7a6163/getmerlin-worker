@@ -1,9 +1,11 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { bearerAuth } from 'hono/bearer-auth';
-import type { Env, OpenAIRequest, OpenAIResponse, MerlinRequest, MerlinResponse } from './types';
-import { getRandomUserAgent, getCurrentTimestamp, getToken, removeCitationPatterns } from './utils';
-import { MERLIN_API_URL, ALLOWED_MODELS } from './constants';
+import type { Env, OpenAIRequest, OpenAIResponse, AnthropicRequest } from './types';
+import { getCurrentTimestamp, removeCitationPatterns } from './utils';
+import { getModels } from './models';
+import { buildMerlinRequest, fetchFromMerlin, readFullContent, parseMerlinSSEBuffer } from './merlin';
+import { handleAnthropicNonStreaming, handleAnthropicStreaming } from './anthropic';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -11,15 +13,22 @@ const app = new Hono<{ Bindings: Env }>();
 app.use('/*', cors({
   origin: '*',
   allowMethods: ['GET', 'POST', 'OPTIONS'],
-  allowHeaders: ['Content-Type', 'Authorization'],
+  allowHeaders: ['Content-Type', 'Authorization', 'x-api-key', 'anthropic-version'],
   maxAge: 86400,
 }));
 
-// Bearer auth middleware for /v1/chat/completions (conditional)
-app.use('/v1/chat/completions', async (c, next) => {
+// Bearer auth middleware for /v1/* (conditional)
+app.use('/v1/*', async (c, next) => {
   const authToken = c.env.AUTH_TOKEN;
 
   if (authToken) {
+    // Support both Bearer token and x-api-key header
+    const apiKey = c.req.header('x-api-key');
+    if (apiKey === authToken) {
+      await next();
+      return;
+    }
+
     const authMiddleware = bearerAuth({ token: authToken });
     return authMiddleware(c, next);
   }
@@ -28,17 +37,19 @@ app.use('/v1/chat/completions', async (c, next) => {
 });
 
 // Root route
-app.get('/', (c) => {
+app.get('/', async (c) => {
+  const models = await getModels();
   return c.json({
     status: "GetMerlin Service Running",
     version: "1.3.0",
-    supported_models: ALLOWED_MODELS
+    supported_models: models
   });
 });
 
 // Models endpoint - OpenAI compatible
-app.get('/v1/models', (c) => {
-  const models = ALLOWED_MODELS.map(modelId => ({
+app.get('/v1/models', async (c) => {
+  const models = await getModels();
+  const data = models.map(modelId => ({
     id: modelId,
     object: "model",
     created: 1677610602,
@@ -63,161 +74,103 @@ app.get('/v1/models', (c) => {
 
   return c.json({
     object: "list",
-    data: models
+    data: data
   });
 });
 
-// Chat completions route
+// Chat completions route - OpenAI compatible
 app.post('/v1/chat/completions', async (c) => {
   try {
     const openAIReq: OpenAIRequest = await c.req.json();
 
-    if (!openAIReq.messages || !Array.isArray(openAIReq.messages)) {
-      return c.json({ error: 'Invalid request format' }, 400);
+    if (!openAIReq.messages || !Array.isArray(openAIReq.messages) || openAIReq.messages.length === 0) {
+      return c.json({ error: 'messages must be a non-empty array' }, 400);
     }
 
     // Validate model
+    const allowedModels = await getModels();
     const requestedModel = openAIReq.model || "gemini-2.5-flash";
-    if (!ALLOWED_MODELS.includes(requestedModel as typeof ALLOWED_MODELS[number])) {
+    if (!allowedModels.includes(requestedModel)) {
       return c.json({
-        error: `Model '${requestedModel}' is not supported. Allowed models: ${ALLOWED_MODELS.join(', ')}`
+        error: `Model '${requestedModel}' is not supported. See GET /v1/models for available models.`
       }, 400);
     }
 
-    // Build context from previous messages
-    const contextMessages: string[] = [];
-    for (let i = 0; i < openAIReq.messages.length - 1; i++) {
-      const msg = openAIReq.messages[i];
-      contextMessages.push(`${msg.role}: ${msg.content}`);
-    }
-    const context = contextMessages.join('\n');
+    const merlinReq = buildMerlinRequest(openAIReq.messages, requestedModel);
+    const merlinResponse = await fetchFromMerlin(merlinReq, c.env);
 
-    // Prepare Merlin request (v2 format)
-    const merlinReq: MerlinRequest = {
-      attachments: [],
-      chatId: crypto.randomUUID(),
-      language: "AUTO",
-      message: {
-        childId: crypto.randomUUID(),
-        content: openAIReq.messages[openAIReq.messages.length - 1].content,
-        context: context,
-        id: crypto.randomUUID(),
-        parentId: "root"
-      },
-      mode: "UNIFIED_CHAT",
-      model: requestedModel,
-      metadata: {
-        noTask: true,
-        isWebpageChat: false,
-        deepResearch: false,
-        webAccess: true,
-        proFinderMode: false,
-        mcpConfig: {
-          isEnabled: false
-        },
-        merlinMagic: false
-      }
-    };
-
-    // Get authentication token
-    const token = await getToken(c.env);
-
-    // Make request to Merlin API
-    const merlinResponse = await fetch(MERLIN_API_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'text/event-stream, text/event-stream',
-        'Authorization': `Bearer ${token}`,
-        'X-Merlin-Version': 'web-merlin',
-        'User-Agent': getRandomUserAgent(),
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Origin': 'https://www.getmerlin.in',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Dest': 'empty',
-        'Referer': 'https://www.getmerlin.in/chat'
-      },
-      body: JSON.stringify(merlinReq)
-    });
-
-    if (!merlinResponse.ok) {
-      const errorText = await merlinResponse.text();
-      throw new Error(`Merlin API error: ${merlinResponse.status} - ${errorText}`);
-    }
-
-    // Handle streaming vs non-streaming response
     if (openAIReq.stream) {
-      return handleStreamingResponse(merlinResponse, requestedModel);
+      return handleOpenAIStreaming(merlinResponse, requestedModel);
     } else {
-      return await handleNonStreamingResponse(merlinResponse, requestedModel);
+      return await handleOpenAINonStreaming(merlinResponse, requestedModel);
     }
 
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    console.error('Chat completions error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
-async function handleNonStreamingResponse(merlinResponse: Response, model: string): Promise<Response> {
-  let fullContent = '';
-  const reader = merlinResponse.body!.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-
+// Messages route - Anthropic compatible
+app.post('/v1/messages', async (c) => {
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+    const anthropicReq: AnthropicRequest = await c.req.json();
 
-      buffer += decoder.decode(value, { stream: true });
-
-      // Process all complete event-data pairs in buffer
-      let processedIndex = 0;
-
-      while (true) {
-        // Find next "event: message"
-        const eventIndex = buffer.indexOf('event: message', processedIndex);
-        if (eventIndex === -1) break;
-
-        // Find corresponding "data: " line
-        const dataIndex = buffer.indexOf('data: ', eventIndex);
-        if (dataIndex === -1) break;
-
-        // Find end of data line
-        const dataEndIndex = buffer.indexOf('\n', dataIndex);
-        if (dataEndIndex === -1) break; // Incomplete data line, wait for more
-
-        // Extract and parse data
-        const dataStr = buffer.substring(dataIndex + 6, dataEndIndex).trim();
-
-        try {
-          const merlinResp: MerlinResponse = JSON.parse(dataStr);
-          if (merlinResp.data) {
-            // v2 API uses 'text' field for content
-            const content = merlinResp.data.text || merlinResp.data.content;
-
-            if (content && content !== ' ' && merlinResp.data.type === 'text') {
-              fullContent += content;
-            }
-          }
-        } catch (e) {
-          // Skip invalid JSON
-        }
-
-        processedIndex = dataEndIndex + 1;
-      }
-
-      // Keep unprocessed part in buffer
-      if (processedIndex > 0) {
-        buffer = buffer.substring(processedIndex);
-      }
+    if (!anthropicReq.messages || !Array.isArray(anthropicReq.messages) || anthropicReq.messages.length === 0) {
+      return c.json({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'messages must be a non-empty array' }
+      }, 400);
     }
-  } finally {
-    reader.releaseLock();
-  }
 
-  // Remove citation patterns
-  fullContent = removeCitationPatterns(fullContent);
+    if (!anthropicReq.max_tokens || typeof anthropicReq.max_tokens !== 'number') {
+      return c.json({
+        type: 'error',
+        error: { type: 'invalid_request_error', message: 'max_tokens is required' }
+      }, 400);
+    }
+
+    // Validate model
+    const allowedModels = await getModels();
+    const requestedModel = anthropicReq.model;
+    if (!requestedModel || !allowedModels.includes(requestedModel)) {
+      return c.json({
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: `Model '${requestedModel}' is not supported. See GET /v1/models for available models.`
+        }
+      }, 400);
+    }
+
+    // Build messages list: prepend system as a user-context message if provided
+    const messages = anthropicReq.system
+      ? [{ role: 'system', content: anthropicReq.system }, ...anthropicReq.messages]
+      : [...anthropicReq.messages];
+
+    const merlinReq = buildMerlinRequest(messages, requestedModel);
+    const merlinResponse = await fetchFromMerlin(merlinReq, c.env);
+
+    if (anthropicReq.stream) {
+      return handleAnthropicStreaming(merlinResponse, requestedModel);
+    } else {
+      return await handleAnthropicNonStreaming(merlinResponse, requestedModel);
+    }
+
+  } catch (error) {
+    console.error('Messages error:', error);
+    return c.json({
+      type: 'error',
+      error: { type: 'api_error', message: 'Internal server error' }
+    }, 500);
+  }
+});
+
+// --- OpenAI response handlers ---
+
+async function handleOpenAINonStreaming(merlinResponse: Response, model: string): Promise<Response> {
+  const rawContent = await readFullContent(merlinResponse);
+  const fullContent = removeCitationPatterns(rawContent);
 
   const response: OpenAIResponse = {
     id: `chatcmpl-${crypto.randomUUID()}`,
@@ -240,20 +193,23 @@ async function handleNonStreamingResponse(merlinResponse: Response, model: strin
   };
 
   return new Response(JSON.stringify(response), {
-    headers: {
-      'Content-Type': 'application/json'
-    }
+    headers: { 'Content-Type': 'application/json' }
   });
 }
 
-function handleStreamingResponse(merlinResponse: Response, model: string): Response {
+function handleOpenAIStreaming(merlinResponse: Response, model: string): Response {
+  if (!merlinResponse.body) {
+    throw new Error('Merlin response has no body');
+  }
+
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
 
-  // Process the stream asynchronously
+  const body = merlinResponse.body;
+
   (async () => {
-    const reader = merlinResponse.body!.getReader();
+    const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
 
@@ -262,80 +218,28 @@ function handleStreamingResponse(merlinResponse: Response, model: string): Respo
         const { done, value } = await reader.read();
         if (done) break;
 
-        const chunk = decoder.decode(value, { stream: true });
-        buffer += chunk;
+        buffer += decoder.decode(value, { stream: true });
+        const { events, remainder } = parseMerlinSSEBuffer(buffer);
+        buffer = remainder;
 
-        // Process all complete event-data pairs in buffer
-        let processedIndex = 0;
+        for (const event of events) {
+          const openAIResp: OpenAIResponse = {
+            id: `chatcmpl-${crypto.randomUUID()}`,
+            object: "chat.completion.chunk",
+            created: getCurrentTimestamp(),
+            model: model,
+            choices: [{
+              index: 0,
+              delta: { content: event.content },
+              finish_reason: null
+            }]
+          };
 
-        while (true) {
-          // Find next "event: " (any event type)
-          const eventIndex = buffer.indexOf('event: ', processedIndex);
-          if (eventIndex === -1) break;
-
-          // Find end of event line
-          const eventEndIndex = buffer.indexOf('\n', eventIndex);
-          if (eventEndIndex === -1) break;
-
-          // Extract event type
-          const eventType = buffer.substring(eventIndex + 7, eventEndIndex).trim();
-
-          // Find corresponding "data: " line
-          const dataIndex = buffer.indexOf('data: ', eventEndIndex);
-          if (dataIndex === -1) break;
-
-          // Find end of data line
-          const dataEndIndex = buffer.indexOf('\n', dataIndex);
-          if (dataEndIndex === -1) break; // Incomplete data line, wait for more
-
-          // Extract and parse data
-          const dataStr = buffer.substring(dataIndex + 6, dataEndIndex).trim();
-
-          try {
-            const merlinResp: MerlinResponse = JSON.parse(dataStr);
-
-            // Handle different event types
-            if (eventType === 'message' && merlinResp.data) {
-              // v2 API uses 'text' field for content
-              const content = merlinResp.data.text || merlinResp.data.content;
-
-              if (content && content !== ' ' && merlinResp.data.type === 'text') {
-                const openAIResp: OpenAIResponse = {
-                  id: `chatcmpl-${crypto.randomUUID()}`,
-                  object: "chat.completion.chunk",
-                  created: getCurrentTimestamp(),
-                  model: model,
-                  choices: [{
-                    index: 0,
-                    delta: {
-                      content: content
-                    },
-                    finish_reason: null
-                  }]
-                };
-
-                const responseData = `data: ${JSON.stringify(openAIResp)}\n\n`;
-                await writer.write(encoder.encode(responseData));
-              }
-            } else if (eventType === 'error') {
-              console.error('Error event received:', merlinResp);
-            }
-          } catch (e) {
-            // Skip invalid JSON
-          }
-
-          processedIndex = dataEndIndex + 1;
-        }
-
-        // Keep unprocessed part in buffer
-        if (processedIndex > 0) {
-          buffer = buffer.substring(processedIndex);
+          await writer.write(encoder.encode(`data: ${JSON.stringify(openAIResp)}\n\n`));
         }
       }
 
-      // Stream processing completed
-
-      // Send final chunk
+      // Final chunk
       const finalResp: OpenAIResponse = {
         id: `chatcmpl-${crypto.randomUUID()}`,
         object: "chat.completion.chunk",
@@ -353,6 +257,9 @@ function handleStreamingResponse(merlinResponse: Response, model: string): Respo
 
     } catch (error) {
       console.error('Streaming error:', error);
+      try {
+        await writer.write(encoder.encode(`data: ${JSON.stringify({ error: 'stream_error' })}\n\n`));
+      } catch { /* writer may already be closed */ }
     } finally {
       reader.releaseLock();
       await writer.close();
