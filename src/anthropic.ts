@@ -1,5 +1,5 @@
 import type { AnthropicResponse } from './types';
-import { getCurrentTimestamp, removeCitationPatterns } from './utils';
+import { removeCitationPatterns } from './utils';
 import { readFullContent, parseMerlinSSEBuffer } from './merlin';
 
 export async function handleAnthropicNonStreaming(
@@ -32,18 +32,23 @@ export function handleAnthropicStreaming(
   merlinResponse: Response,
   model: string
 ): Response {
+  if (!merlinResponse.body) {
+    throw new Error('Merlin response has no body');
+  }
+
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
 
   const msgId = `msg_${crypto.randomUUID()}`;
+  const body = merlinResponse.body;
 
   async function writeEvent(eventType: string, data: Record<string, unknown>): Promise<void> {
     await writer.write(encoder.encode(`event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`));
   }
 
   (async () => {
-    const reader = merlinResponse.body!.getReader();
+    const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
 
@@ -106,6 +111,12 @@ export function handleAnthropicStreaming(
 
     } catch (error) {
       console.error('Anthropic streaming error:', error);
+      try {
+        await writeEvent('error', {
+          type: 'error',
+          error: { type: 'api_error', message: 'stream_error' }
+        });
+      } catch { /* writer may already be closed */ }
     } finally {
       reader.releaseLock();
       await writer.close();

@@ -39,33 +39,46 @@ export function buildMerlinRequest(messages: ChatMessage[], model: string): Merl
   };
 }
 
+const MERLIN_FETCH_TIMEOUT_MS = 30_000;
+
 export async function fetchFromMerlin(merlinReq: MerlinRequest, env: Env): Promise<Response> {
   const token = await getToken(env);
 
-  const response = await fetch(MERLIN_API_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Accept': 'text/event-stream, text/event-stream',
-      'Authorization': `Bearer ${token}`,
-      'X-Merlin-Version': 'web-merlin',
-      'User-Agent': getRandomUserAgent(),
-      'Accept-Language': 'en-US,en;q=0.9',
-      'Origin': 'https://www.getmerlin.in',
-      'Sec-Fetch-Site': 'same-origin',
-      'Sec-Fetch-Mode': 'cors',
-      'Sec-Fetch-Dest': 'empty',
-      'Referer': 'https://www.getmerlin.in/chat'
-    },
-    body: JSON.stringify(merlinReq)
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), MERLIN_FETCH_TIMEOUT_MS);
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Merlin API error: ${response.status} - ${errorText}`);
+  try {
+    const response = await fetch(MERLIN_API_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        'Authorization': `Bearer ${token}`,
+        'X-Merlin-Version': 'web-merlin',
+        'User-Agent': getRandomUserAgent(),
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Origin': 'https://www.getmerlin.in',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Mode': 'cors',
+        'Sec-Fetch-Dest': 'empty',
+        'Referer': 'https://www.getmerlin.in/chat'
+      },
+      body: JSON.stringify(merlinReq),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Merlin API error:', response.status, errorText);
+      throw new Error(`Merlin API returned status ${response.status}`);
+    }
+
+    return response;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    throw error;
   }
-
-  return response;
 }
 
 export interface MerlinSSEEvent {
@@ -75,28 +88,28 @@ export interface MerlinSSEEvent {
 
 /**
  * Parse a buffer of SSE data from Merlin, yielding text content chunks.
+ * Splits on \n\n event boundaries for correctness.
  * Returns the unprocessed remainder of the buffer.
  */
 export function parseMerlinSSEBuffer(buffer: string): { events: MerlinSSEEvent[]; remainder: string } {
   const events: MerlinSSEEvent[] = [];
-  let processedIndex = 0;
+  const parts = buffer.split('\n\n');
+  const remainder = parts.pop() ?? '';
 
-  while (true) {
-    const eventIndex = buffer.indexOf('event: ', processedIndex);
-    if (eventIndex === -1) break;
+  for (const part of parts) {
+    const lines = part.split('\n');
+    let eventType = '';
+    let dataStr = '';
 
-    const eventEndIndex = buffer.indexOf('\n', eventIndex);
-    if (eventEndIndex === -1) break;
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        eventType = line.slice(7).trim();
+      } else if (line.startsWith('data: ')) {
+        dataStr = line.slice(6).trim();
+      }
+    }
 
-    const eventType = buffer.substring(eventIndex + 7, eventEndIndex).trim();
-
-    const dataIndex = buffer.indexOf('data: ', eventEndIndex);
-    if (dataIndex === -1) break;
-
-    const dataEndIndex = buffer.indexOf('\n', dataIndex);
-    if (dataEndIndex === -1) break;
-
-    const dataStr = buffer.substring(dataIndex + 6, dataEndIndex).trim();
+    if (!eventType || !dataStr) continue;
 
     try {
       const merlinResp: MerlinResponse = JSON.parse(dataStr);
@@ -113,11 +126,8 @@ export function parseMerlinSSEBuffer(buffer: string): { events: MerlinSSEEvent[]
     } catch {
       // Skip invalid JSON
     }
-
-    processedIndex = dataEndIndex + 1;
   }
 
-  const remainder = processedIndex > 0 ? buffer.substring(processedIndex) : buffer;
   return { events, remainder };
 }
 
@@ -125,8 +135,12 @@ export function parseMerlinSSEBuffer(buffer: string): { events: MerlinSSEEvent[]
  * Read the entire Merlin SSE stream and return the full concatenated content.
  */
 export async function readFullContent(merlinResponse: Response): Promise<string> {
+  if (!merlinResponse.body) {
+    throw new Error('Merlin response has no body');
+  }
+
   let fullContent = '';
-  const reader = merlinResponse.body!.getReader();
+  const reader = merlinResponse.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
 

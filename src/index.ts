@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { bearerAuth } from 'hono/bearer-auth';
 import type { Env, OpenAIRequest, OpenAIResponse, AnthropicRequest } from './types';
-import { getRandomUserAgent, getCurrentTimestamp, removeCitationPatterns } from './utils';
+import { getCurrentTimestamp, removeCitationPatterns } from './utils';
 import { getModels } from './models';
 import { buildMerlinRequest, fetchFromMerlin, readFullContent, parseMerlinSSEBuffer } from './merlin';
 import { handleAnthropicNonStreaming, handleAnthropicStreaming } from './anthropic';
@@ -83,8 +83,8 @@ app.post('/v1/chat/completions', async (c) => {
   try {
     const openAIReq: OpenAIRequest = await c.req.json();
 
-    if (!openAIReq.messages || !Array.isArray(openAIReq.messages)) {
-      return c.json({ error: 'Invalid request format' }, 400);
+    if (!openAIReq.messages || !Array.isArray(openAIReq.messages) || openAIReq.messages.length === 0) {
+      return c.json({ error: 'messages must be a non-empty array' }, 400);
     }
 
     // Validate model
@@ -92,7 +92,7 @@ app.post('/v1/chat/completions', async (c) => {
     const requestedModel = openAIReq.model || "gemini-2.5-flash";
     if (!allowedModels.includes(requestedModel)) {
       return c.json({
-        error: `Model '${requestedModel}' is not supported. Allowed models: ${allowedModels.join(', ')}`
+        error: `Model '${requestedModel}' is not supported. See GET /v1/models for available models.`
       }, 400);
     }
 
@@ -106,7 +106,8 @@ app.post('/v1/chat/completions', async (c) => {
     }
 
   } catch (error) {
-    return c.json({ error: (error as Error).message }, 500);
+    console.error('Chat completions error:', error);
+    return c.json({ error: 'Internal server error' }, 500);
   }
 });
 
@@ -115,10 +116,10 @@ app.post('/v1/messages', async (c) => {
   try {
     const anthropicReq: AnthropicRequest = await c.req.json();
 
-    if (!anthropicReq.messages || !Array.isArray(anthropicReq.messages)) {
+    if (!anthropicReq.messages || !Array.isArray(anthropicReq.messages) || anthropicReq.messages.length === 0) {
       return c.json({
         type: 'error',
-        error: { type: 'invalid_request_error', message: 'messages is required' }
+        error: { type: 'invalid_request_error', message: 'messages must be a non-empty array' }
       }, 400);
     }
 
@@ -137,7 +138,7 @@ app.post('/v1/messages', async (c) => {
         type: 'error',
         error: {
           type: 'invalid_request_error',
-          message: `Model '${requestedModel}' is not supported. Allowed models: ${allowedModels.join(', ')}`
+          message: `Model '${requestedModel}' is not supported. See GET /v1/models for available models.`
         }
       }, 400);
     }
@@ -157,9 +158,10 @@ app.post('/v1/messages', async (c) => {
     }
 
   } catch (error) {
+    console.error('Messages error:', error);
     return c.json({
       type: 'error',
-      error: { type: 'api_error', message: (error as Error).message }
+      error: { type: 'api_error', message: 'Internal server error' }
     }, 500);
   }
 });
@@ -196,12 +198,18 @@ async function handleOpenAINonStreaming(merlinResponse: Response, model: string)
 }
 
 function handleOpenAIStreaming(merlinResponse: Response, model: string): Response {
+  if (!merlinResponse.body) {
+    throw new Error('Merlin response has no body');
+  }
+
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
   const encoder = new TextEncoder();
 
+  const body = merlinResponse.body;
+
   (async () => {
-    const reader = merlinResponse.body!.getReader();
+    const reader = body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
 
@@ -249,6 +257,9 @@ function handleOpenAIStreaming(merlinResponse: Response, model: string): Respons
 
     } catch (error) {
       console.error('Streaming error:', error);
+      try {
+        await writer.write(encoder.encode(`data: ${JSON.stringify({ error: 'stream_error' })}\n\n`));
+      } catch { /* writer may already be closed */ }
     } finally {
       reader.releaseLock();
       await writer.close();
