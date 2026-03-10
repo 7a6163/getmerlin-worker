@@ -1,4 +1,4 @@
-import { MODELS_CDN_URL, MODEL_CACHE_TTL_SECONDS } from './constants';
+import { MODEL_CACHE_TTL_SECONDS, MODELS_CDN_URL } from './constants';
 import type { MerlinConstantsResponse } from './types';
 
 function parseModels(data: MerlinConstantsResponse): string[] {
@@ -7,7 +7,10 @@ function parseModels(data: MerlinConstantsResponse): string[] {
   }
 
   return data.textLLMs
-    .filter((m) => !m.archived && !m.paid && m.queryCost <= 1 && typeof m.id === 'string')
+    .filter(
+      (m) =>
+        !m.archived && !m.paid && m.queryCost <= 1 && typeof m.id === 'string',
+    )
     .map((m) => m.id);
 }
 

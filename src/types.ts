@@ -48,7 +48,7 @@ export interface MerlinMessage {
 }
 
 export interface MerlinRequest {
-  attachments: any[];
+  attachments: unknown[];
   chatId: string;
   language: string;
   message: MerlinMessage;

@@ -7,7 +7,10 @@ export interface ChatMessage {
   content: string;
 }
 
-export function buildMerlinRequest(messages: ChatMessage[], model: string): MerlinRequest {
+export function buildMerlinRequest(
+  messages: ChatMessage[],
+  model: string,
+): MerlinRequest {
   const contextMessages: string[] = [];
   for (let i = 0; i < messages.length - 1; i++) {
     const msg = messages[i];
@@ -17,15 +20,15 @@ export function buildMerlinRequest(messages: ChatMessage[], model: string): Merl
   return {
     attachments: [],
     chatId: crypto.randomUUID(),
-    language: "AUTO",
+    language: 'AUTO',
     message: {
       childId: crypto.randomUUID(),
       content: messages[messages.length - 1].content,
       context: contextMessages.join('\n'),
       id: crypto.randomUUID(),
-      parentId: "root"
+      parentId: 'root',
     },
-    mode: "UNIFIED_CHAT",
+    mode: 'UNIFIED_CHAT',
     model: model,
     metadata: {
       noTask: true,
@@ -34,34 +37,40 @@ export function buildMerlinRequest(messages: ChatMessage[], model: string): Merl
       webAccess: true,
       proFinderMode: false,
       mcpConfig: { isEnabled: false },
-      merlinMagic: false
-    }
+      merlinMagic: false,
+    },
   };
 }
 
 const MERLIN_FETCH_TIMEOUT_MS = 30_000;
 
-export async function fetchFromMerlin(merlinReq: MerlinRequest, env: Env): Promise<Response> {
+export async function fetchFromMerlin(
+  merlinReq: MerlinRequest,
+  env: Env,
+): Promise<Response> {
   const token = await getToken(env);
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), MERLIN_FETCH_TIMEOUT_MS);
+  const timeoutId = setTimeout(
+    () => controller.abort(),
+    MERLIN_FETCH_TIMEOUT_MS,
+  );
 
   try {
     const response = await fetch(MERLIN_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Accept': 'text/event-stream',
-        'Authorization': `Bearer ${token}`,
+        Accept: 'text/event-stream',
+        Authorization: `Bearer ${token}`,
         'X-Merlin-Version': 'web-merlin',
         'User-Agent': getRandomUserAgent(),
         'Accept-Language': 'en-US,en;q=0.9',
-        'Origin': 'https://www.getmerlin.in',
+        Origin: 'https://www.getmerlin.in',
         'Sec-Fetch-Site': 'same-origin',
         'Sec-Fetch-Mode': 'cors',
         'Sec-Fetch-Dest': 'empty',
-        'Referer': 'https://www.getmerlin.in/chat'
+        Referer: 'https://www.getmerlin.in/chat',
       },
       body: JSON.stringify(merlinReq),
       signal: controller.signal,
@@ -91,7 +100,10 @@ export interface MerlinSSEEvent {
  * Splits on \n\n event boundaries for correctness.
  * Returns the unprocessed remainder of the buffer.
  */
-export function parseMerlinSSEBuffer(buffer: string): { events: MerlinSSEEvent[]; remainder: string } {
+export function parseMerlinSSEBuffer(buffer: string): {
+  events: MerlinSSEEvent[];
+  remainder: string;
+} {
   const events: MerlinSSEEvent[] = [];
   const parts = buffer.split('\n\n');
   const remainder = parts.pop() ?? '';
@@ -134,7 +146,9 @@ export function parseMerlinSSEBuffer(buffer: string): { events: MerlinSSEEvent[]
 /**
  * Read the entire Merlin SSE stream and return the full concatenated content.
  */
-export async function readFullContent(merlinResponse: Response): Promise<string> {
+export async function readFullContent(
+  merlinResponse: Response,
+): Promise<string> {
   if (!merlinResponse.body) {
     throw new Error('Merlin response has no body');
   }
