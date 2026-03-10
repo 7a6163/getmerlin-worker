@@ -4,7 +4,7 @@ import type { Env, FirebaseTokenResponse } from './types';
 export function getRandomUserAgent(): string {
   try {
     return UserAgent();
-  } catch (error) {
+  } catch (_error) {
     return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
   }
 }
@@ -40,11 +40,11 @@ export async function getToken(env: Env): Promise<string> {
         headers: {
           'Content-Type': 'application/json',
           'User-Agent': getRandomUserAgent(),
-          'X-Client-Version': 'Chrome/JsCore/10.13.1/FirebaseCore-web'
+          'X-Client-Version': 'Chrome/JsCore/10.13.1/FirebaseCore-web',
         },
         body: JSON.stringify({ returnSecureToken: true }),
         signal: controller.signal,
-      }
+      },
     );
     clearTimeout(timeoutId);
 
@@ -63,7 +63,7 @@ export async function getToken(env: Env): Promise<string> {
     tokenExpiresAt = Date.now() + 55 * 60 * 1000 - TOKEN_REFRESH_MARGIN_MS;
 
     return cachedToken;
-  } catch (error) {
+  } catch (_error) {
     clearTimeout(timeoutId);
     throw new Error('Failed to obtain authentication token');
   }

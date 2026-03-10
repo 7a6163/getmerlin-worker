@@ -6,6 +6,8 @@
   "scripts": {
     "build": "tsc --noEmit",
     "type-check": "tsc --noEmit",
+    "lint": "biome check src/",
+    "lint:fix": "biome check --write src/",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "tail": "wrangler tail"
@@ -25,6 +27,7 @@
     "hono": "^4.8.5"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.4.6",
     "@types/fake-useragent": "^1.0.0",
     "@types/node": "^24.1.0",
     "typescript": "^5.8.3",
