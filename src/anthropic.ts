@@ -2,6 +2,9 @@ import { parseMerlinSSEBuffer, readFullContent } from './merlin';
 import type { AnthropicResponse } from './types';
 import { removeCitationPatterns } from './utils';
 
+// Module-level encoder shared across all streaming requests
+const encoder = new TextEncoder();
+
 export async function handleAnthropicNonStreaming(
   merlinResponse: Response,
   model: string,
@@ -38,7 +41,6 @@ export function handleAnthropicStreaming(
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
-  const encoder = new TextEncoder();
 
   const msgId = `msg_${crypto.randomUUID()}`;
   const body = merlinResponse.body;
@@ -133,7 +135,6 @@ export function handleAnthropicStreaming(
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
     },
   });
 }

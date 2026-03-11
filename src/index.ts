@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { bearerAuth } from 'hono/bearer-auth';
 import { cors } from 'hono/cors';
 import {
   handleAnthropicNonStreaming,
@@ -20,6 +19,9 @@ import type {
 } from './types';
 import { getCurrentTimestamp, removeCitationPatterns } from './utils';
 
+// Module-level encoder shared across all streaming requests
+const encoder = new TextEncoder();
+
 const app = new Hono<{ Bindings: Env }>();
 
 // CORS middleware
@@ -38,7 +40,7 @@ app.use(
   }),
 );
 
-// Bearer auth middleware for /v1/* (conditional)
+// Bearer auth middleware for /v1/* (conditional, direct comparison)
 app.use('/v1/*', async (c, next) => {
   const authToken = c.env.AUTH_TOKEN;
 
@@ -50,8 +52,13 @@ app.use('/v1/*', async (c, next) => {
       return;
     }
 
-    const authMiddleware = bearerAuth({ token: authToken });
-    return authMiddleware(c, next);
+    const authHeader = c.req.header('Authorization');
+    if (authHeader === `Bearer ${authToken}`) {
+      await next();
+      return;
+    }
+
+    return c.json({ error: 'Unauthorized' }, 401);
   }
 
   await next();
@@ -77,7 +84,7 @@ app.get('/v1/models', async (c) => {
     owned_by: 'openai',
     permission: [
       {
-        id: `modelperm-${crypto.randomUUID()}`,
+        id: `modelperm-${modelId}`,
         object: 'model_permission',
         created: 1677610602,
         allow_create_engine: false,
@@ -268,8 +275,10 @@ function handleOpenAIStreaming(
 
   const { readable, writable } = new TransformStream();
   const writer = writable.getWriter();
-  const encoder = new TextEncoder();
 
+  // Generate ID and timestamp once for entire response
+  const responseId = `chatcmpl-${crypto.randomUUID()}`;
+  const created = getCurrentTimestamp();
   const body = merlinResponse.body;
 
   (async () => {
@@ -288,10 +297,10 @@ function handleOpenAIStreaming(
 
         for (const event of events) {
           const openAIResp: OpenAIResponse = {
-            id: `chatcmpl-${crypto.randomUUID()}`,
+            id: responseId,
             object: 'chat.completion.chunk',
-            created: getCurrentTimestamp(),
-            model: model,
+            created,
+            model,
             choices: [
               {
                 index: 0,
@@ -309,10 +318,10 @@ function handleOpenAIStreaming(
 
       // Final chunk
       const finalResp: OpenAIResponse = {
-        id: `chatcmpl-${crypto.randomUUID()}`,
+        id: responseId,
         object: 'chat.completion.chunk',
-        created: getCurrentTimestamp(),
-        model: model,
+        created,
+        model,
         choices: [
           {
             index: 0,
@@ -347,7 +356,6 @@ function handleOpenAIStreaming(
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
     },
   });
 }
