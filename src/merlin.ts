@@ -153,7 +153,7 @@ export async function readFullContent(
     throw new Error('Merlin response has no body');
   }
 
-  let fullContent = '';
+  const chunks: string[] = [];
   const reader = merlinResponse.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -168,12 +168,12 @@ export async function readFullContent(
       buffer = remainder;
 
       for (const event of events) {
-        fullContent += event.content;
+        chunks.push(event.content);
       }
     }
   } finally {
     reader.releaseLock();
   }
 
-  return fullContent;
+  return chunks.join('');
 }
