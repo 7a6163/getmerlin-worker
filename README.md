@@ -32,7 +32,7 @@ curl https://your-worker.workers.dev/v1/models
    # Required: Set Google API Key for Firebase authentication
    wrangler secret put GOOGLE_API_KEY
 
-   # Optional: Set authentication token for API access
+   # Required: Set authentication token for API access
    wrangler secret put AUTH_TOKEN
    ```
 
@@ -103,15 +103,16 @@ Both endpoints support `"stream": true` with their respective SSE formats.
    # Enter your Google API Key when prompted
    ```
 
-#### 2. Optional Authentication Token
+#### 2. Authentication Token (Required)
 
-To protect your API endpoint:
+All `/v1/*` endpoints require authentication. The worker returns 503 if `AUTH_TOKEN` is not configured.
+
 ```bash
 wrangler secret put AUTH_TOKEN
 # Enter your desired authentication token
 ```
 
-If `AUTH_TOKEN` is set, clients must include one of:
+Clients must include one of:
 ```
 Authorization: Bearer <your-token>
 x-api-key: <your-token>
