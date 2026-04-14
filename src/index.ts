@@ -6,6 +6,7 @@ import {
 } from './anthropic';
 import {
   buildMerlinRequest,
+  type ChatMessage,
   fetchFromMerlin,
   parseMerlinSSEBuffer,
   readFullContent,
@@ -17,10 +18,32 @@ import type {
   OpenAIRequest,
   OpenAIResponse,
 } from './types';
-import { getCurrentTimestamp, removeCitationPatterns } from './utils';
+import {
+  getCurrentTimestamp,
+  removeCitationPatterns,
+  timingSafeEqual,
+} from './utils';
 
 // Module-level encoder shared across all streaming requests
 const encoder = new TextEncoder();
+
+function sanitizeForDisplay(value: string): string {
+  return value.slice(0, 100).replace(/[^\w.\-:]/g, '');
+}
+
+function getModelOwner(modelId: string): string {
+  if (
+    modelId.startsWith('gpt-') ||
+    modelId.startsWith('o1') ||
+    modelId.startsWith('o3') ||
+    modelId.startsWith('o4')
+  )
+    return 'openai';
+  if (modelId.startsWith('gemini-')) return 'google';
+  if (modelId.startsWith('deepseek-')) return 'deepseek-ai';
+  if (modelId.startsWith('claude-')) return 'anthropic';
+  return 'unknown';
+}
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -40,28 +63,32 @@ app.use(
   }),
 );
 
-// Bearer auth middleware for /v1/* (conditional, direct comparison)
+// Bearer auth middleware for /v1/* (requires AUTH_TOKEN to be configured)
 app.use('/v1/*', async (c, next) => {
   const authToken = c.env.AUTH_TOKEN;
 
-  if (authToken) {
-    // Support both Bearer token and x-api-key header
-    const apiKey = c.req.header('x-api-key');
-    if (apiKey === authToken) {
-      await next();
-      return;
-    }
-
-    const authHeader = c.req.header('Authorization');
-    if (authHeader === `Bearer ${authToken}`) {
-      await next();
-      return;
-    }
-
-    return c.json({ error: 'Unauthorized' }, 401);
+  if (!authToken) {
+    return c.json({ error: 'AUTH_TOKEN not configured' }, 503);
   }
 
-  await next();
+  // Support both Bearer token and x-api-key header
+  const apiKey = c.req.header('x-api-key');
+  if (apiKey && timingSafeEqual(apiKey, authToken)) {
+    await next();
+    return;
+  }
+
+  const authHeader = c.req.header('Authorization');
+  const bearerPrefix = 'Bearer ';
+  if (
+    authHeader?.startsWith(bearerPrefix) &&
+    timingSafeEqual(authHeader.slice(bearerPrefix.length), authToken)
+  ) {
+    await next();
+    return;
+  }
+
+  return c.json({ error: 'Unauthorized' }, 401);
 });
 
 // Root route
@@ -81,7 +108,7 @@ app.get('/v1/models', async (c) => {
     id: modelId,
     object: 'model',
     created: 1677610602,
-    owned_by: 'openai',
+    owned_by: getModelOwner(modelId),
     permission: [
       {
         id: `modelperm-${modelId}`,
@@ -110,6 +137,10 @@ app.get('/v1/models', async (c) => {
 
 // Chat completions route - OpenAI compatible
 app.post('/v1/chat/completions', async (c) => {
+  if (!c.req.header('content-type')?.includes('application/json')) {
+    return c.json({ error: 'Content-Type must be application/json' }, 415);
+  }
+
   try {
     const openAIReq: OpenAIRequest = await c.req.json();
 
@@ -127,7 +158,7 @@ app.post('/v1/chat/completions', async (c) => {
     if (!allowedModels.includes(requestedModel)) {
       return c.json(
         {
-          error: `Model '${requestedModel}' is not supported. See GET /v1/models for available models.`,
+          error: `Model '${sanitizeForDisplay(requestedModel)}' is not supported. See GET /v1/models for available models.`,
         },
         400,
       );
@@ -149,6 +180,19 @@ app.post('/v1/chat/completions', async (c) => {
 
 // Messages route - Anthropic compatible
 app.post('/v1/messages', async (c) => {
+  if (!c.req.header('content-type')?.includes('application/json')) {
+    return c.json(
+      {
+        type: 'error',
+        error: {
+          type: 'invalid_request_error',
+          message: 'Content-Type must be application/json',
+        },
+      },
+      415,
+    );
+  }
+
   try {
     const anthropicReq: AnthropicRequest = await c.req.json();
 
@@ -194,7 +238,7 @@ app.post('/v1/messages', async (c) => {
           type: 'error',
           error: {
             type: 'invalid_request_error',
-            message: `Model '${requestedModel}' is not supported. See GET /v1/models for available models.`,
+            message: `Model '${sanitizeForDisplay(requestedModel || '')}' is not supported. See GET /v1/models for available models.`,
           },
         },
         400,
@@ -202,7 +246,7 @@ app.post('/v1/messages', async (c) => {
     }
 
     // Build messages list: prepend system as a user-context message if provided
-    const messages = anthropicReq.system
+    const messages: ChatMessage[] = anthropicReq.system
       ? [
           { role: 'system', content: anthropicReq.system },
           ...anthropicReq.messages,
@@ -348,9 +392,13 @@ function handleOpenAIStreaming(
       }
     } finally {
       reader.releaseLock();
-      await writer.close();
+      try {
+        await writer.close();
+      } catch {
+        /* writer may already be errored */
+      }
     }
-  })();
+  })().catch((error) => console.error('Stream pipeline error:', error));
 
   return new Response(readable, {
     headers: {

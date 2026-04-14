@@ -23,18 +23,44 @@ export function getCurrentTimestamp(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-// Firebase token cache (module-level, survives across requests within same isolate)
-const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000; // refresh 5 min before expiry
+export function timingSafeEqual(a: string, b: string): boolean {
+  const encoder = new TextEncoder();
+  const aBytes = encoder.encode(a);
+  const bBytes = encoder.encode(b);
+  if (aBytes.length !== bBytes.length) return false;
+  let result = 0;
+  for (let i = 0; i < aBytes.length; i++) {
+    result |= aBytes[i] ^ bBytes[i];
+  }
+  return result === 0;
+}
+
+// Firebase anonymous tokens are valid for 1 hour
+const FIREBASE_TOKEN_LIFETIME_MS = 60 * 60 * 1000;
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000;
 let cachedToken: string | null = null;
 let tokenExpiresAt = 0;
+let tokenInflight: Promise<string> | null = null;
 
 export async function getToken(env: Env): Promise<string> {
-  // Return cached token if still valid
   if (cachedToken && Date.now() < tokenExpiresAt) {
     return cachedToken;
   }
 
-  const googleApiKey = env.GOOGLE_API_KEY || '';
+  // Deduplicate concurrent fetches
+  if (tokenInflight) {
+    return tokenInflight;
+  }
+
+  tokenInflight = fetchFirebaseToken(env).finally(() => {
+    tokenInflight = null;
+  });
+
+  return tokenInflight;
+}
+
+async function fetchFirebaseToken(env: Env): Promise<string> {
+  const googleApiKey = env.GOOGLE_API_KEY;
   if (!googleApiKey) {
     throw new Error('GOOGLE_API_KEY is not configured');
   }
@@ -68,14 +94,21 @@ export async function getToken(env: Env): Promise<string> {
       throw new Error('Received empty token from Firebase');
     }
 
-    // Firebase anonymous tokens are valid for ~1 hour
     cachedToken = data.idToken;
-    tokenExpiresAt = Date.now() + 55 * 60 * 1000 - TOKEN_REFRESH_MARGIN_MS;
+    tokenExpiresAt =
+      Date.now() + FIREBASE_TOKEN_LIFETIME_MS - TOKEN_REFRESH_MARGIN_MS;
 
     return cachedToken;
-  } catch (_error) {
+  } catch (error) {
     clearTimeout(timeoutId);
-    throw new Error('Failed to obtain authentication token');
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new Error('Firebase auth token fetch timed out', {
+        cause: error,
+      });
+    }
+    throw new Error('Failed to obtain authentication token', {
+      cause: error,
+    });
   }
 }
 

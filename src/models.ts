@@ -1,4 +1,8 @@
-import { MODEL_CACHE_TTL_SECONDS, MODELS_CDN_URL } from './constants';
+import {
+  MODEL_CACHE_TTL_SECONDS,
+  MODEL_ID_PATTERN,
+  MODELS_CDN_URL,
+} from './constants';
 import type { MerlinConstantsResponse } from './types';
 
 // Hardcoded fallback models in case both in-memory cache and CDN fail
@@ -13,6 +17,7 @@ const FALLBACK_MODELS = [
 const IN_MEMORY_TTL_MS = 5 * 60 * 1000; // 5 minutes
 let cachedModels: readonly string[] | null = null;
 let modelsCacheExpiresAt = 0;
+let modelsInflight: Promise<readonly string[]> | null = null;
 
 function parseModels(data: MerlinConstantsResponse): string[] {
   if (!data.textLLMs || !Array.isArray(data.textLLMs)) {
@@ -22,7 +27,11 @@ function parseModels(data: MerlinConstantsResponse): string[] {
   return data.textLLMs
     .filter(
       (m) =>
-        !m.archived && !m.paid && m.queryCost <= 1 && typeof m.id === 'string',
+        !m.archived &&
+        !m.paid &&
+        m.queryCost <= 1 &&
+        typeof m.id === 'string' &&
+        MODEL_ID_PATTERN.test(m.id),
     )
     .map((m) => m.id);
 }
@@ -33,6 +42,19 @@ export async function getModels(): Promise<readonly string[]> {
     return cachedModels;
   }
 
+  // Deduplicate concurrent fetches
+  if (modelsInflight) {
+    return modelsInflight;
+  }
+
+  modelsInflight = fetchModels().finally(() => {
+    modelsInflight = null;
+  });
+
+  return modelsInflight;
+}
+
+async function fetchModels(): Promise<readonly string[]> {
   const cache = caches.default;
   const cacheKey = new Request(MODELS_CDN_URL);
 

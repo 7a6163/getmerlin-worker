@@ -127,9 +127,13 @@ export function handleAnthropicStreaming(
       }
     } finally {
       reader.releaseLock();
-      await writer.close();
+      try {
+        await writer.close();
+      } catch {
+        /* writer may already be errored */
+      }
     }
-  })();
+  })().catch((error) => console.error('Stream pipeline error:', error));
 
   return new Response(readable, {
     headers: {

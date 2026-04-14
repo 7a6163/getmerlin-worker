@@ -1,4 +1,8 @@
-import { MERLIN_API_URL } from './constants';
+import {
+  ALLOWED_ROLES,
+  MAX_MESSAGE_CONTENT_LENGTH,
+  MERLIN_API_URL,
+} from './constants';
 import type { Env, MerlinRequest, MerlinResponse } from './types';
 import { getRandomUserAgent, getToken } from './utils';
 
@@ -7,10 +11,25 @@ export interface ChatMessage {
   content: string;
 }
 
+function validateMessage(msg: ChatMessage): void {
+  if (!ALLOWED_ROLES.has(msg.role)) {
+    throw new Error(`Invalid message role: ${msg.role}`);
+  }
+  if (msg.content.length > MAX_MESSAGE_CONTENT_LENGTH) {
+    throw new Error(
+      `Message content exceeds maximum length of ${MAX_MESSAGE_CONTENT_LENGTH} characters`,
+    );
+  }
+}
+
 export function buildMerlinRequest(
   messages: ChatMessage[],
   model: string,
 ): MerlinRequest {
+  for (const msg of messages) {
+    validateMessage(msg);
+  }
+
   const contextMessages: string[] = [];
   for (let i = 0; i < messages.length - 1; i++) {
     const msg = messages[i];
@@ -86,6 +105,10 @@ export async function fetchFromMerlin(
     return response;
   } catch (error) {
     clearTimeout(timeoutId);
+    console.error(
+      'Merlin fetch failed:',
+      error instanceof Error ? error.message : error,
+    );
     throw error;
   }
 }
@@ -98,6 +121,7 @@ export interface MerlinSSEEvent {
 /**
  * Parse a buffer of SSE data from Merlin, yielding text content chunks.
  * Splits on \n\n event boundaries for correctness.
+ * Concatenates multiple data: lines per SSE spec.
  * Returns the unprocessed remainder of the buffer.
  */
 export function parseMerlinSSEBuffer(buffer: string): {
@@ -111,17 +135,19 @@ export function parseMerlinSSEBuffer(buffer: string): {
   for (const part of parts) {
     const lines = part.split('\n');
     let eventType = '';
-    let dataStr = '';
+    const dataLines: string[] = [];
 
     for (const line of lines) {
       if (line.startsWith('event: ')) {
         eventType = line.slice(7).trim();
       } else if (line.startsWith('data: ')) {
-        dataStr = line.slice(6).trim();
+        dataLines.push(line.slice(6).trim());
       }
     }
 
-    if (!eventType || !dataStr) continue;
+    if (!eventType || dataLines.length === 0) continue;
+
+    const dataStr = dataLines.join('\n');
 
     try {
       const merlinResp: MerlinResponse = JSON.parse(dataStr);
