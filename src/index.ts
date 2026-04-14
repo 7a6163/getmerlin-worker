@@ -63,12 +63,13 @@ app.use(
   }),
 );
 
-// Bearer auth middleware for /v1/* (requires AUTH_TOKEN to be configured)
+// Bearer auth middleware for /v1/* (optional: skip auth when AUTH_TOKEN is not set)
 app.use('/v1/*', async (c, next) => {
   const authToken = c.env.AUTH_TOKEN;
 
   if (!authToken) {
-    return c.json({ error: 'AUTH_TOKEN not configured' }, 503);
+    await next();
+    return;
   }
 
   // Support both Bearer token and x-api-key header

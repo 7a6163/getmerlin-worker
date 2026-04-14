@@ -103,16 +103,16 @@ Both endpoints support `"stream": true` with their respective SSE formats.
    # Enter your Google API Key when prompted
    ```
 
-#### 2. Authentication Token (Required)
+#### 2. Authentication Token (Optional)
 
-All `/v1/*` endpoints require authentication. The worker returns 503 if `AUTH_TOKEN` is not configured.
+When `AUTH_TOKEN` is configured, all `/v1/*` endpoints require authentication. When not configured, authentication is skipped.
 
 ```bash
 wrangler secret put AUTH_TOKEN
 # Enter your desired authentication token
 ```
 
-Clients must include one of:
+When enabled, clients must include one of:
 ```
 Authorization: Bearer <your-token>
 x-api-key: <your-token>

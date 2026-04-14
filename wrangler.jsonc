@@ -7,6 +7,7 @@
 	"name": "getmerlin-worker",
 	"main": "src/index.ts",
 	"compatibility_date": "2025-07-18",
+	"preview_urls": false,
 	"observability": {
 		"enabled": true
 	},
